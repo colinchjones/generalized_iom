@@ -1,6 +1,5 @@
 import numpy as np
-
-from scipy.stats import chi2, kstest, cramervonmises, shapiro, norm, jarque_bera
+from scipy.stats import chi2, kstest, cramervonmises, norm, jarque_bera
 from scipy.special import logsumexp
 from pingouin import multivariate_normality
 
@@ -16,22 +15,19 @@ def coerce_diag_gmm_inputs(X, weights, means, scales):
     ----------
     X : array-like, shape (n,) or (n, d)
         Latent observations after normalizing flow.
-
-    weights : array-like, shape (K,)
+    weights : array-like, shape (m,)
         Mixture weights.
-
-    means : array-like, shape (K,) or (K, d)
+    means : array-like, shape (m,) or (m, d)
         Component means.
-
-    scales : array-like, shape (K,) or (K, d)
+    scales : array-like, shape (m,) or (m, d)
         Component standard deviations, not variances.
 
     Returns
     -------
     X : array, shape (n, d)
-    weights : array, shape (K,)
-    means : array, shape (K, d)
-    scales : array, shape (K, d)
+    weights : array, shape (m,)
+    means : array, shape (m, d)
+    scales : array, shape (m, d)
     """
     X = np.asarray(X, dtype=float)
     weights = np.asarray(weights, dtype=float)
@@ -47,16 +43,18 @@ def coerce_diag_gmm_inputs(X, weights, means, scales):
     if scales.ndim == 1:
         scales = scales[:, None]
 
-    K, d = means.shape
+    m, d = means.shape
 
-    if weights.shape != (K,):
-        raise ValueError(f"weights shape {weights.shape}, expected ({K},).")
+    if weights.shape != (m,):
+        raise ValueError(f"weights shape {weights.shape}, expected ({m},).")
 
-    if scales.shape != (K, d):
-        raise ValueError(f"scales shape {scales.shape}, expected ({K},{d}).")
+    if scales.shape != (m, d):
+        raise ValueError(f"scales shape {scales.shape}, expected ({m},{d}).")
 
     if X.shape[1] != d:
-        raise ValueError(f"X has dimension {X.shape[1]}, but means has dimension {d}.")
+        raise ValueError(
+            f"X has dimension {X.shape[1]}, but means has dimension {d}."
+        )
 
     if np.any(scales <= 0):
         raise ValueError("All scales must be positive standard deviations.")
@@ -101,11 +99,11 @@ def diag_gmm_responsibilities(X, weights, means, scales):
     )
 
     n = X.shape[0]
-    K = len(weights)
+    m = len(weights)
 
-    logp = np.empty((n, K), dtype=float)
+    logp = np.empty((n, m), dtype=float)
 
-    for k in range(K):
+    for k in range(m):
         logp[:, k] = (
             np.log(weights[k])
             + diag_gaussian_logpdf(
@@ -122,9 +120,7 @@ def diag_gmm_responsibilities(X, weights, means, scales):
 
 
 def hard_assign_modes(X, weights, means, scales):
-    """
-    Assign each observation to the most likely component.
-    """
+    """Assign each observation to the most likely mixture component."""
     gamma = diag_gmm_responsibilities(X, weights, means, scales)
     labels = gamma.argmax(axis=1)
     max_resp = gamma.max(axis=1)
@@ -137,31 +133,32 @@ def hard_assign_modes(X, weights, means, scales):
 # ============================================================
 def whiten_by_assigned_mode_diag(X, weights, means, scales):
     """
-    Hard-assign observations to the most likely mode, then whiten
-    each observation using that mode's diagonal mean and standard deviation.
+    Assign observations to their most likely mode and whiten using that mode.
 
         R_ij = (X_ij - mu_{k,j}) / sigma_{k,j}
 
-    If assignment is correct and the GMM is correct, then within each mode:
+    Under the fitted mixture:
 
         R_i ~ N(0, I_d)
 
-    and pooled:
+    and
 
-        Q_i = sum_j R_ij^2 ~ chi2_d
+        Q_i = sum_j R_ij^2 ~ chi2_d.
     """
     X, weights, means, scales = coerce_diag_gmm_inputs(
         X, weights, means, scales
     )
 
-    labels, gamma, max_resp = hard_assign_modes(X, weights, means, scales)
+    labels, gamma, max_resp = hard_assign_modes(
+        X, weights, means, scales
+    )
 
     n, d = X.shape
-    K = len(weights)
+    m = len(weights)
 
     R = np.empty_like(X, dtype=float)
 
-    for k in range(K):
+    for k in range(m):
         idx = labels == k
 
         if not np.any(idx):
@@ -183,28 +180,18 @@ def whiten_by_assigned_mode_diag(X, weights, means, scales):
         "scales": scales,
         "n": n,
         "d": d,
-        "K": K,
+        "m": m,
     }
 
 
 # ============================================================
-# Normality test by mode:
-#   - Jarque-Bera if d = 1
-#   - Henze-Zirkler if d >= 2
+# Normality test by mode
 # ============================================================
 def normality_by_mode(R, labels, min_n=20, alpha=0.05):
     """
-    Run normality tests within each assigned mode.
+    Test normality within each assigned mode.
 
-    If d == 1:
-        Uses Jarque-Bera test on the whitened residuals R[:, 0].
-
-    If d >= 2:
-        Uses Henze-Zirkler multivariate normality test via pingouin.
-
-    Returns
-    -------
-    rows : list of dict
+    Jarque-Bera is used when d = 1 and Henze-Zirkler when d >= 2.
     """
     R = np.asarray(R, dtype=float)
     labels = np.asarray(labels)
@@ -264,17 +251,7 @@ def normality_by_mode(R, labels, min_n=20, alpha=0.05):
 # ============================================================
 def stouffer_method(pvals):
     """
-    Stouffer's method for combining p-values.
-
-    This is less dominated by one very small p-value than Fisher's method.
-    Uses equal weights.
-
-    Returns
-    -------
-    dict with:
-        stat : combined z statistic
-        pvalue : combined one-sided p-value
-        n_tests : number of valid p-values
+    Combine p-values using Stouffer's method with equal weights.
     """
     pvals = np.asarray(pvals, dtype=float)
     pvals = pvals[~np.isnan(pvals)]
@@ -286,7 +263,11 @@ def stouffer_method(pvals):
             "n_tests": 0,
         }
 
-    pvals = np.clip(pvals, np.finfo(float).tiny, 1.0 - np.finfo(float).eps)
+    pvals = np.clip(
+        pvals,
+        np.finfo(float).tiny,
+        1.0 - np.finfo(float).eps
+    )
 
     z = norm.ppf(1.0 - pvals)
     z_combined = np.sum(z) / np.sqrt(len(z))
@@ -303,9 +284,7 @@ def stouffer_method(pvals):
 # Pooled chi-square tests
 # ============================================================
 def pooled_chi2_tests(Q, d):
-    """
-    Test pooled Q_i = ||R_i||^2 against chi2_d.
-    """
+    """Test pooled Q_i = ||R_i||^2 against chi2_d."""
     Q = np.asarray(Q, dtype=float)
 
     ks = kstest(Q, chi2(df=d).cdf)
@@ -332,21 +311,19 @@ def pooled_chi2_tests(Q, d):
 # Mode-level summaries
 # ============================================================
 def mode_summaries_diag(R, Q, labels, max_resp, weights, d, min_n=20):
-    """
-    Summaries and chi-square diagnostics by assigned mode.
-    """
+    """Return assignment and chi-square diagnostics by mixture mode."""
     R = np.asarray(R, dtype=float)
     Q = np.asarray(Q, dtype=float)
     labels = np.asarray(labels)
     max_resp = np.asarray(max_resp, dtype=float)
     weights = np.asarray(weights, dtype=float)
 
-    K = len(weights)
+    m = len(weights)
     n = len(labels)
 
     rows = []
 
-    for k in range(K):
+    for k in range(m):
         idx = labels == k
         nk = int(np.sum(idx))
 
@@ -409,37 +386,32 @@ def whitened_mode_normality_workflow_diag(
     verbose=True,
 ):
     """
-    Workflow for diagonal Gaussian mixture diagnostics:
+    Run diagnostics for a diagonal Gaussian-mixture latent distribution.
 
-    1. Compute posterior responsibilities.
-    2. Assign each observation to the most likely mode.
-    3. Whiten within assigned mode:
-
-            R_ij = (X_ij - mu_{k,j}) / sigma_{k,j}
-
-    4. Test normality within each mode:
-            d = 1: Shapiro-Wilk
-            d >= 2: Henze-Zirkler
-
-    5. Combine mode-level normality p-values with Stouffer's method.
-    6. Test pooled Q_i = ||R_i||^2 against chi2_d.
-    7. Return assignment certainty, mode summaries, normality results, and Q diagnostics.
+    Observations are assigned to their most likely mode, whitened within mode,
+    tested for normality, combined using Stouffer's method, and pooled squared
+    residuals are tested against chi2_d.
 
     Parameters
     ----------
     X : array, shape (n,) or (n, d)
         Latent values after normalizing flow.
-
-    weights : array, shape (K,)
+    weights : array, shape (m,)
         Mixture weights.
-
-    means : array, shape (K,) or (K, d)
+    means : array, shape (m,) or (m, d)
         Component means.
-
-    scales : array, shape (K,) or (K, d)
+    scales : array, shape (m,) or (m, d)
         Diagonal component standard deviations.
+    min_mode_n : int, default=20
+        Minimum observations required for a mode-level test.
+    alpha : float, default=0.05
+        Significance level for normality testing.
+    verbose : bool, default=True
+        Print diagnostic results.
     """
-    res = whiten_by_assigned_mode_diag(X, weights, means, scales)
+    res = whiten_by_assigned_mode_diag(
+        X, weights, means, scales
+    )
 
     R = res["R"]
     Q = res["Q"]
@@ -449,7 +421,7 @@ def whitened_mode_normality_workflow_diag(
 
     n = res["n"]
     d = res["d"]
-    K = res["K"]
+    m = res["m"]
 
     assignment = {
         "mean_max_resp": float(np.mean(max_resp)),
@@ -459,8 +431,8 @@ def whitened_mode_normality_workflow_diag(
         "frac_gt_0.90": float(np.mean(max_resp > 0.90)),
         "frac_gt_0.95": float(np.mean(max_resp > 0.95)),
         "frac_gt_0.99": float(np.mean(max_resp > 0.99)),
-        "assigned_counts": np.bincount(labels, minlength=K),
-        "assigned_weights": np.bincount(labels, minlength=K) / n,
+        "assigned_counts": np.bincount(labels, minlength=m),
+        "assigned_weights": np.bincount(labels, minlength=m) / n,
         "target_weights": res["weights"],
     }
 
@@ -508,16 +480,23 @@ def whitened_mode_normality_workflow_diag(
         "mode_summary": mode_summary,
         "n": n,
         "d": d,
-        "K": K,
+        "m": m,
     }
 
     if verbose:
-        print(f"--- Whitened mode-normality diagnostics (n={n}, d={d}, K={K}) ---")
+        print(
+            f"--- Whitened mode-normality diagnostics "
+            f"(n={n}, d={d}, m={m}) ---"
+        )
 
         print("\n[1] Normality by assigned mode")
         for row in normality_results:
-            print(f"    mode: {row['mode']}  n: {row['n']}  test: {row['test']}  pvalue: {row['pvalue']:.4f}")
-
+            print(
+                f"    mode: {row['mode']}  "
+                f"n: {row['n']}  "
+                f"test: {row['test']}  "
+                f"pvalue: {row['pvalue']:.4f}"
+            )
 
         print("\n[1b] Stouffer combined normality p-value")
         print(f"     z = {stouffer_normality['stat']:.4f}")
@@ -527,9 +506,11 @@ def whitened_mode_normality_workflow_diag(
         print("\n[2] Pooled Q against chi-square")
         print(f"    KS p-value:  {pooled['ks_pvalue']:.4f}")
         print(f"    CvM p-value: {pooled['cvm_pvalue']:.4f}")
-        print(f"    Q mean:      {pooled['Q_mean']:.4f}  expected approx d={d}")
+        print(
+            f"    Q mean:      {pooled['Q_mean']:.4f}  "
+            f"expected approx d={d}"
+        )
         print(f"    Q max:       {pooled['Q_max']:.4f}")
         print(f"    min tail p:  {pooled['tail_min']:.4g}")
 
     return result
-
