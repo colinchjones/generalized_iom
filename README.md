@@ -114,4 +114,4 @@ Here, `p` is the number of SHAP dimensions. This computes upper-tail thresholds 
 
 Start with `nf_multimodal.ipynb` for distribution experiments or `IOM_ME.ipynb` for a simulated analysis. Run cells in order and keep the repository root on Python's import path so that `iom` and `mode_assign` can be imported. The notebooks are research workflows rather than a packaged command-line application.
 
-`IOM_PISA.ipynb` uses data from [PISA](https://www.oecd.org/en/about/programmes/pisa/pisa-data.html).
+`IOM_PISA.ipynb` uses data from [PISA](https://www.oecd.org/en/data/datasets/pisa-2022-database.html#data).
